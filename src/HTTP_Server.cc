@@ -1,7 +1,10 @@
-#include "HTTP_Server.h"
+#include "HTTP_Server.hh"
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
+#include <errno.h>
 
 void init_server(HTTP_Server * http_server, int port) {
 	http_server->port = port;
@@ -13,7 +16,10 @@ void init_server(HTTP_Server * http_server, int port) {
 	server_address.sin_port = htons(port);
 	server_address.sin_addr.s_addr = INADDR_ANY;
 
-	bind(server_socket, (struct sockaddr *) &server_address, sizeof(server_address));
+	if(-1 == bind(server_socket, (struct sockaddr *) &server_address, sizeof(server_address))){
+		fprintf(stderr,"Bind error: %s (errno: %d)\n", strerror(errno), errno);
+    	exit(1);
+	}
 
 	listen(server_socket, 5);
 

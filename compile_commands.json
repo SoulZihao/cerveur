@@ -2,40 +2,53 @@
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-Iinclude",
       "-c",
+      "-Iinclude",
       "-o",
-      "src/HTTP_Server.o",
-      "src/HTTP_Server.c"
+      "obj/Response.o",
+      "src/Response.c"
     ],
-    "directory": "/home/infraredCoding/workspace/websockets",
-    "file": "/home/infraredCoding/workspace/websockets/src/HTTP_Server.c",
-    "output": "/home/infraredCoding/workspace/websockets/src/HTTP_Server.o"
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/Response.c",
+    "output": "/home/zihao/socket_labs/cerveur/obj/Response.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-Iinclude",
       "-c",
-      "-o",
-      "src/main.o",
-      "src/main.c"
-    ],
-    "directory": "/home/infraredCoding/workspace/websockets",
-    "file": "/home/infraredCoding/workspace/websockets/src/main.c",
-    "output": "/home/infraredCoding/workspace/websockets/src/main.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
       "-Iinclude",
-      "-c",
       "-o",
-      "src/Routes.o",
+      "obj/Routes.o",
       "src/Routes.c"
     ],
-    "directory": "/home/infraredCoding/workspace/websockets",
-    "file": "/home/infraredCoding/workspace/websockets/src/Routes.c",
-    "output": "/home/infraredCoding/workspace/websockets/src/Routes.o"
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/Routes.c",
+    "output": "/home/zihao/socket_labs/cerveur/obj/Routes.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-c",
+      "-Iinclude",
+      "-o",
+      "obj/HTTP_Server.o",
+      "src/HTTP_Server.c"
+    ],
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/HTTP_Server.c",
+    "output": "/home/zihao/socket_labs/cerveur/obj/HTTP_Server.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-c",
+      "-Iinclude",
+      "-o",
+      "obj/main.o",
+      "src/main.c"
+    ],
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/main.c",
+    "output": "/home/zihao/socket_labs/cerveur/obj/main.o"
   }
 ]

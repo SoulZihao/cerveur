@@ -1,22 +1,26 @@
-CC=gcc
+CC=g++
 CFLAGS=-Iinclude
-DEPS = HTTP_Server.h
-exec = server.o
-sources = $(wildcard src/*.c)
-objects = $(sources:.c=.o)
+OBJDIR = obj
+#DEPS = HTTP_Server.h
+TARGET = server
+SOURCES = $(wildcard src/*.cc)
+OBJECTS = $(patsubst src/%.cc, $(OBJDIR)/%.o, $(SOURCES))
 flags = -g -Wall -lm -ldl -fPIC -rdynamic -I./include
 # flags = -I./include
 
-$(exec): $(objects)
-	gcc $(objects) $(flags) -o $(exec)
+#$(exec): $(objects)
+#	$(CC) $(objects) $(flags) -o $(exec)
 
-%.o: %.c %.h
-	gcc -c $(flags) $< -o $@
+$(TARGET): $(OBJECTS)
+	$(CC) $(OBJECTS) $(CFLAGS) -o $@
 
+$(OBJDIR)/%.o: src/%.cc | $(OBJDIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(OBJDIR):
+	mkdir -p $@
 
 clean:
-	-rm *.out
-	-rm *.o
-	-rm *.a
-	-rm src/*.a
-	-rm src/*.o
+	-rm -rf obj/
+
+.PHONY: clean
