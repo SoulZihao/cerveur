@@ -23,7 +23,7 @@ bool HttpServer::init(int port) {
 		return false;
 	}
 
-	if (listen(m_listenfd, 5) == -1) return false;
+	if (listen(m_listenfd, SOMAXCONN) == -1) return false;
 	this->m_epollfd = epoll_create1(0);
     http_conn::m_epollfd = this->m_epollfd;
 	// 3. 初始化连接池

@@ -22,8 +22,9 @@ void http_conn::init() {
     m_linger = false;
     m_file_fd = -1;
     m_file_offset = 0;
-    // 初始化缓冲区
-    memset(m_read_buf, '\0', READ_BUFFER_SIZE);
+    bytes_to_send = 0;
+    bytes_have_send = 0;
+    m_header.clear();
 }
 
 void http_conn::close_conn() {
@@ -67,26 +68,18 @@ void http_conn::modfd(int epollfd, int fd, int ev) {
 
 http_conn::LINE_STATUS http_conn::parse_line() {
     // 从当前检查的位置开始寻找 \r\n
-    for (; m_checked_idx < m_read_idx; ++m_checked_idx) {
-        char temp = m_read_buf[m_checked_idx];
-        
-        // 发现 \r，说明可能到行尾了
-        if (temp == '\r') {
-            // 如果 \r 是当前缓冲区的最后一个字符，说明行还没传完
-            if ((m_checked_idx + 1) == m_read_idx) {
-                return LINE_OPEN;
-            }
-            // 如果后面跟着 \n，说明找到了完整的行
-            if (m_read_buf[m_checked_idx + 1] == '\n') {
-                // 此时 m_checked_idx 指向 \r
-                // 我们不修改缓冲区，只是跳过这两个字符，让下次调用从新的一行开始
-                m_checked_idx += 2; 
-                return LINE_OK;
-            }
-            // 只有 \r 没有 \n，不符合 HTTP 规范
-            return LINE_BAD;
-        }
+    char temp = m_read_buf[m_checked_idx];
+    char* cr_pos = (char*)memchr(m_read_buf + m_checked_idx, '\r', m_read_idx - m_checked_idx);
+    if (!cr_pos || cr_pos + 1 >= m_read_buf + m_read_idx) {
+        return LINE_OPEN;
     }
+    if (*(cr_pos + 1) == '\n') {
+        // 仅当检查成功时更新 m_checked_idx
+        m_checked_idx = cr_pos - m_read_buf + 2;
+        return LINE_OK;
+        // 如果 \r 是当前缓冲区的最后一个字符，说明行还没传完
+        // 只有 \r 没有 \n，不符合 HTTP 规范
+    }else return LINE_BAD;
     // 遍历完还没找到 \r，说明数据不全
     return LINE_OPEN;
 }
@@ -127,9 +120,9 @@ http_conn::HTTP_CODE http_conn::parse_request() {
 }
 
 // 解析路由
-http_conn::HTTP_CODE http_conn::do_request() {
+http_conn::RESOURCE_STATUS http_conn::do_request() {
     const char* doc_root = "./";
-
+    static thread_local char path_buffer[FILENAME_LEN];
     // 使用路由器查找映射
     auto& router = Router::getInstance();
     auto mapped_file = router.find(std::string(m_url));
@@ -144,39 +137,54 @@ http_conn::HTTP_CODE http_conn::do_request() {
     // 安全构建路径
     m_real_path = doc_root + filename;
 
+
+    int len = 0;
+    if (mapped_file) {
+        len = snprintf(path_buffer, FILENAME_LEN, "%stemplates/%s", doc_root, mapped_file->c_str());
+    } else if (m_url.find("/static/") == 0) {
+        // 直接从 URL 偏移量获取资源路径
+        len = snprintf(path_buffer,FILENAME_LEN,"%sstatic/index.css",doc_root);
+    }
+
+    if (len >= FILENAME_LEN) return RES_ERROR; // 路径过长防御
+
+    // 3. string_view 仅仅作为一个方便操作的视图
+    // 注意：m_real_path 现在可以只是一个 string_view，指向 path_buffer
+    m_real_path = path_buffer;
+
     // 4. 获取文件状态
-    if (stat(m_real_path.c_str(), &m_file_stat) < 0) {
-        return NO_RESOURCE; // 404
+    if (stat(path_buffer, &m_file_stat) < 0) {
+        return RES_NOT_FOUND; // 404
     }
 
     // 5. 权限检查：是否可读
     if (!(m_file_stat.st_mode & S_IROTH)) {
-        return FORBIDDEN_REQUEST; // 403
+        return RES_FORBIDDEN; // 403
     }
 
     // 6. 类型检查：确保不是目录
     if (S_ISDIR(m_file_stat.st_mode)) {
-        return BAD_REQUEST; // 400
+        return RES_ERROR; // 400
     }
-    m_file_fd = open(m_real_path.c_str(), O_RDONLY);
-    if (m_file_fd < 0) return INTERNAL_ERROR; // 打开失败，返回 500
+    m_file_fd = open(path_buffer, O_RDONLY);
+    if (m_file_fd < 0) return RES_ERROR; // 打开失败，返回 500
     
     m_file_size = m_file_stat.st_size;
     m_file_offset = 0;
     // 7. 到这里说明文件一切正常
     // 在之后的 process_write 中将使用 m_real_file 进行 sendfile
-    return FILE_REQUEST;
+    return RES_FOUND;
 }
 
 // 主要处理逻辑,执行modfd
 void http_conn::process() {
     // 1. 调用主状态机进行解析
-    printf("\n[DEBUG] Received a Request from Client %d:\n", m_sockfd);
-    printf("---------- START ----------\n");
-    // 注意：因为缓冲区里可能包含之前的旧数据，
-    // 我们只打印从开头到 m_read_idx 之间的内容
-    printf("%.*s", m_read_idx, m_read_buf);
-    printf("\n----------  END  ----------\n\n");
+    // printf("\n[DEBUG] Received a Request from Client %d:\n", m_sockfd);
+    // printf("---------- START ----------\n");
+    // // 注意：因为缓冲区里可能包含之前的旧数据，
+    // // 我们只打印从开头到 m_read_idx 之间的内容
+    // printf("%.*s", m_read_idx, m_read_buf);
+    // printf("\n----------  END  ----------\n");
     HTTP_CODE read_ret = parse_request();
 
     // 2. 如果请求还没收全 (NO_REQUEST)，继续监听读事件
@@ -192,14 +200,15 @@ void http_conn::process() {
     // modfd(m_epollfd, m_sockfd, EPOLLOUT);
 
     // 3. 根据解析结果决定响应逻辑
-    HTTP_CODE write_ret;
+    RESOURCE_STATUS write_ret;
     switch (read_ret) {
         case GET_REQUEST: {
             // 解析成功，去查找文件、映射内存或准备 sendfile 路径
-            // do_request 处理路由逻辑
+            
             write_ret = do_request();
             // 应在此处添加请求头的构造逻辑
-            if(write_ret == FILE_REQUEST) modfd(m_epollfd, m_sockfd, EPOLLOUT);
+            process_write(write_ret);
+            modfd(m_epollfd, m_sockfd, EPOLLOUT);
             break;
         }
         // case BAD_REQUEST: {
@@ -243,12 +252,64 @@ bool http_conn::read_once() {
     return true;
 }
 
+// 建议在 http_conn 类中增加一个辅助函数获取 MIME 类型
+const char* http_conn::get_mime_type(const std::string_view& path) {
+    if (path.find(".html") != std::string_view::npos) return "text/html";
+    if (path.find(".css") != std::string_view::npos)  return "text/css";
+    if (path.find(".js") != std::string_view::npos)   return "text/javascript";
+    if (path.find(".jpg") != std::string_view::npos)  return "image/jpeg";
+    if (path.find(".png") != std::string_view::npos)  return "image/png";
+    return "text/plain";
+}
+
+bool http_conn::process_write(RESOURCE_STATUS ret) {
+    // m_header.clear();
+
+    switch (ret) {
+        case RES_FOUND: {
+            m_header = "HTTP/1.1 200 OK\r\n";
+            m_header += "Server: Cerveur/1.0\r\n";
+            m_header += "Content-Length: " + std::to_string(m_file_size) + "\r\n";
+            m_header += "Content-Type: " + std::string(get_mime_type(m_real_path)) + "\r\n";
+            m_header += "Connection: " + std::string(m_linger ? "keep-alive" : "close") + "\r\n";
+            m_header += "\r\n"; // 关键的空行
+            return true;
+        }
+        case RES_NOT_FOUND: { // 404
+            m_header = "HTTP/1.1 404 Not Found\r\n";
+            const char* body = "<html><body><h1>404 Not Found</h1></body></html>";
+            m_header += "Content-Length: " + std::to_string(strlen(body)) + "\r\n";
+            m_header += "Connection: close\r\n\r\n";
+            m_header += body;
+            return true;
+        }
+        case RES_FORBIDDEN: { // 403
+            m_header = "HTTP/1.1 403 Forbidden\r\n";
+            m_header += "Content-Length: 0\r\n";
+            m_header += "Connection: close\r\n\r\n";
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 // true：需要等待；false：需要重置
 bool http_conn::write() {
     // 1. 发送 Header
-    if (m_file_offset == 0) {
-        std::string header = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(m_file_size) + "\r\n\r\n";
-        send(m_sockfd, header.data(), header.size(), 0);
+    ssize_t temp = 0;
+    bytes_to_send = m_header.size() - bytes_have_send;
+    while (bytes_to_send > 0) {
+        temp = send(m_sockfd, m_header.data() + bytes_have_send, bytes_to_send, 0);
+        if (temp <= -1) {
+            if (errno == EAGAIN) {
+                modfd(m_epollfd, m_sockfd, EPOLLOUT);
+                return true;
+            }
+            return false;
+        }
+        bytes_to_send -= temp;
+        bytes_have_send += temp;
     }
 
     // 2. 循环发送文件

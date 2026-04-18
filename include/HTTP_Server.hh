@@ -33,6 +33,6 @@ private:
     int m_epollfd;
     http_conn* m_users; // 管理所有 socket 的档案
     static const int MAX_FD = 65536;
-	static const int MAX_EVENT_NUMBER = 10;
+	static const int MAX_EVENT_NUMBER = 1024;
 };
 
