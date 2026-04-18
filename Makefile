@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS=-Iinclude
+CFLAGS=-g -Iinclude
 OBJDIR = obj
 #DEPS = HTTP_Server.h
 TARGET = server

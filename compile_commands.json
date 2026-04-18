@@ -1,54 +1,54 @@
 [
   {
     "arguments": [
-      "/usr/bin/gcc",
-      "-c",
-      "-Iinclude",
-      "-o",
-      "obj/Response.o",
-      "src/Response.c"
-    ],
-    "directory": "/home/zihao/socket_labs/cerveur",
-    "file": "/home/zihao/socket_labs/cerveur/src/Response.c",
-    "output": "/home/zihao/socket_labs/cerveur/obj/Response.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-c",
-      "-Iinclude",
-      "-o",
-      "obj/Routes.o",
-      "src/Routes.c"
-    ],
-    "directory": "/home/zihao/socket_labs/cerveur",
-    "file": "/home/zihao/socket_labs/cerveur/src/Routes.c",
-    "output": "/home/zihao/socket_labs/cerveur/obj/Routes.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
+      "/usr/bin/g++",
       "-c",
       "-Iinclude",
       "-o",
       "obj/HTTP_Server.o",
-      "src/HTTP_Server.c"
+      "src/HTTP_Server.cc"
     ],
     "directory": "/home/zihao/socket_labs/cerveur",
-    "file": "/home/zihao/socket_labs/cerveur/src/HTTP_Server.c",
+    "file": "/home/zihao/socket_labs/cerveur/src/HTTP_Server.cc",
     "output": "/home/zihao/socket_labs/cerveur/obj/HTTP_Server.o"
   },
   {
     "arguments": [
-      "/usr/bin/gcc",
+      "/usr/bin/g++",
       "-c",
       "-Iinclude",
       "-o",
       "obj/main.o",
-      "src/main.c"
+      "src/main.cc"
     ],
     "directory": "/home/zihao/socket_labs/cerveur",
-    "file": "/home/zihao/socket_labs/cerveur/src/main.c",
+    "file": "/home/zihao/socket_labs/cerveur/src/main.cc",
     "output": "/home/zihao/socket_labs/cerveur/obj/main.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-Iinclude",
+      "-o",
+      "obj/Routes.o",
+      "src/Routes.cc"
+    ],
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/Routes.cc",
+    "output": "/home/zihao/socket_labs/cerveur/obj/Routes.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-Iinclude",
+      "-o",
+      "obj/Response.o",
+      "src/Response.cc"
+    ],
+    "directory": "/home/zihao/socket_labs/cerveur",
+    "file": "/home/zihao/socket_labs/cerveur/src/Response.cc",
+    "output": "/home/zihao/socket_labs/cerveur/obj/Response.o"
   }
 ]

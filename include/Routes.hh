@@ -7,6 +7,10 @@ class Router {
     // 路径：文件名
     std::unordered_map<std::string, std::string> route_map;
 public:
+    static Router& getInstance() {
+        static Router instance;
+        return instance;
+    }
     // 添加路由：直接插入哈希表
     void add(const std::string& path, const std::string& file);
 
