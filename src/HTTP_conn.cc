@@ -117,6 +117,8 @@ http_conn::HTTP_CODE http_conn::parse_request() {
             default: return BAD_REQUEST;
         }
     }
+    if(line_status == LINE_BAD)return BAD_REQUEST;
+    // LINE_OPEN
     return NO_REQUEST;
 }
 
@@ -218,11 +220,12 @@ void http_conn::process() {
     }
 
     // 4. 无论成功还是失败，只要准备好了响应内容，就切换到写事件
-    // 触发 EPOLLOUT 之后，event_loop 会调用 write() 函数
+    // 触发 EPOLLOUT 之后，event_loop 会调用 write_once() 函数
     
 }
 
 // 只在http_server中调用一次
+// true：需要等待；false：需要重置
 bool http_conn::read_once() {
     if (m_read_idx >= READ_BUFFER_SIZE) return false;
 
@@ -231,7 +234,7 @@ bool http_conn::read_once() {
         ssize_t bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
         
         if (bytes_read == -1) {
-            // EAGAIN 说明内核缓冲区已经读空了
+            // EAGAIN: 内核缓冲区已经读空，但依然返回true，让process()决定是否继续读
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             return false;
         } else if (bytes_read == 0) {
@@ -299,7 +302,7 @@ bool http_conn::process_write(RESOURCE_STATUS ret) {
 }
 
 // true：需要等待；false：需要重置
-bool http_conn::write() {
+bool http_conn::write_once() {
     // 1. 发送 Header
     ssize_t temp = 0;
     bytes_to_send = header_len - bytes_have_send;

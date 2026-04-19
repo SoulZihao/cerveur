@@ -28,7 +28,7 @@ public:
     // 逻辑处理：解析 HTTP 并匹配路由
     void process();
     // 非阻塞写：执行 sendfile 逻辑
-    bool write();
+    bool write_once();
 
     static int m_epollfd;         // 共享同一个 epollfd
     static void addfd(int epollfd, int fd, bool one_shot);

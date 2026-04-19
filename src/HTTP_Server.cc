@@ -73,12 +73,12 @@ void HttpServer::event_loop(){
             // 情况 3：可以向客户端发数据了 (Write)
             else if (events[i].events & EPOLLOUT) {
                 // 执行非阻塞写
-                if (!m_users[sockfd].write()) {
+                if (!m_users[sockfd].write_once()) {
                     // 如果写失败（比如对端突然断开，或者文件读取异常）
                     // 这里调用的 close_conn 就是所谓“析构”
                     m_users[sockfd].close_conn();
                 }
-                // 如果 write 返回 true，说明要么发完了，要么还在等待缓冲区，
+                // 如果 write_once 返回 true，说明要么发完了，要么还在等待缓冲区，
                 // 内部已经处理好了 modfd 或 keep-alive 的逻辑。
             }
             
