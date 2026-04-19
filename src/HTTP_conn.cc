@@ -5,7 +5,9 @@
 #include <Routes.hh>
 
 int http_conn::m_epollfd = -1;
-
+static thread_local char path_buffer[http_conn::FILENAME_LEN];
+static thread_local char header[http_conn::FILENAME_LEN];
+static thread_local int header_len;
 // 专门给 accept 后的新连接用
 void http_conn::init(int sockfd) {
     m_sockfd = sockfd;
@@ -24,7 +26,6 @@ void http_conn::init() {
     m_file_offset = 0;
     bytes_to_send = 0;
     bytes_have_send = 0;
-    m_header.clear();
 }
 
 void http_conn::close_conn() {
@@ -121,59 +122,50 @@ http_conn::HTTP_CODE http_conn::parse_request() {
 
 // 解析路由
 http_conn::RESOURCE_STATUS http_conn::do_request() {
-    const char* doc_root = "./";
-    static thread_local char path_buffer[FILENAME_LEN];
-    // 使用路由器查找映射
+    const char* doc_root = ".";
     auto& router = Router::getInstance();
     auto mapped_file = router.find(std::string(m_url));
-    std::string filename;
-    if (mapped_file) {
-        // 使用路由器返回的文件名
-        filename = "templates/" + mapped_file.value_or("404.html");
-    } else if (m_url.find("/static/") == 0) {
-        // 静态资源
-        filename = "static/index.css";
-    }
-    // 安全构建路径
-    m_real_path = doc_root + filename;
-
-
-    int len = 0;
-    if (mapped_file) {
-        len = snprintf(path_buffer, FILENAME_LEN, "%stemplates/%s", doc_root, mapped_file->c_str());
-    } else if (m_url.find("/static/") == 0) {
-        // 直接从 URL 偏移量获取资源路径
-        len = snprintf(path_buffer,FILENAME_LEN,"%sstatic/index.css",doc_root);
-    }
-
-    if (len >= FILENAME_LEN) return RES_ERROR; // 路径过长防御
-
-    // 3. string_view 仅仅作为一个方便操作的视图
-    // 注意：m_real_path 现在可以只是一个 string_view，指向 path_buffer
-    m_real_path = path_buffer;
-
-    // 4. 获取文件状态
-    if (stat(path_buffer, &m_file_stat) < 0) {
-        return RES_NOT_FOUND; // 404
-    }
-
-    // 5. 权限检查：是否可读
-    if (!(m_file_stat.st_mode & S_IROTH)) {
-        return RES_FORBIDDEN; // 403
-    }
-
-    // 6. 类型检查：确保不是目录
-    if (S_ISDIR(m_file_stat.st_mode)) {
-        return RES_ERROR; // 400
-    }
-    m_file_fd = open(path_buffer, O_RDONLY);
-    if (m_file_fd < 0) return RES_ERROR; // 打开失败，返回 500
     
+    bool is_404 = false;
+    int len = 0;
+
+    // 1. 尝试定位原始资源
+    if (mapped_file) {
+        len = snprintf(path_buffer, FILENAME_LEN, "%s/templates/%s", doc_root, mapped_file->c_str());
+    } else if (m_url.find("/static/") == 0) {
+        len = snprintf(path_buffer, FILENAME_LEN, "%s%.*s", doc_root,(int)m_url.size(), m_url.data());
+    } else {
+        is_404 = true;
+    }
+
+    // 2. 检查原始资源是否存在（如果目前还不是 404 的话）
+    if (!is_404 && stat(path_buffer, &m_file_stat) < 0) {
+        is_404 = true;
+    }
+
+    // 3. Fallback 逻辑：如果确定是 404，强行改道去拿 404.html
+    if (is_404) {
+        snprintf(path_buffer, FILENAME_LEN, "%stemplates/404.html", doc_root);
+        if (stat(path_buffer, &m_file_stat) < 0) {
+            // 如果连 404.html 都没有，那只能返回彻底的错误
+            return RES_ERROR; 
+        }
+        // 标记我们要返回 404 状态码，但下面会继续打开文件
+    }
+
+    // 4. 通用的权限和类型检查
+    if (!(m_file_stat.st_mode & S_IROTH)) return RES_FORBIDDEN;
+    if (S_ISDIR(m_file_stat.st_mode)) return RES_ERROR;
+
+    // 5. 统一打开文件（无论是目标文件还是 404 页面）
+    m_file_fd = open(path_buffer, O_RDONLY);
+    if (m_file_fd < 0) return RES_ERROR;
+
     m_file_size = m_file_stat.st_size;
     m_file_offset = 0;
-    // 7. 到这里说明文件一切正常
-    // 在之后的 process_write 中将使用 m_real_file 进行 sendfile
-    return RES_FOUND;
+
+    // 6. 返回对应的状态码，指导 process_write 写 Header
+    return is_404 ? RES_NOT_FOUND : RES_FOUND;
 }
 
 // 主要处理逻辑,执行modfd
@@ -200,13 +192,11 @@ void http_conn::process() {
     // modfd(m_epollfd, m_sockfd, EPOLLOUT);
 
     // 3. 根据解析结果决定响应逻辑
-    RESOURCE_STATUS write_ret;
     switch (read_ret) {
         case GET_REQUEST: {
             // 解析成功，去查找文件、映射内存或准备 sendfile 路径
-            
-            write_ret = do_request();
-            // 应在此处添加请求头的构造逻辑
+            RESOURCE_STATUS write_ret = do_request();
+            // 请求头的构造逻辑
             process_write(write_ret);
             modfd(m_epollfd, m_sockfd, EPOLLOUT);
             break;
@@ -252,55 +242,69 @@ bool http_conn::read_once() {
     return true;
 }
 
-// 建议在 http_conn 类中增加一个辅助函数获取 MIME 类型
-const char* http_conn::get_mime_type(const std::string_view& path) {
-    if (path.find(".html") != std::string_view::npos) return "text/html";
-    if (path.find(".css") != std::string_view::npos)  return "text/css";
-    if (path.find(".js") != std::string_view::npos)   return "text/javascript";
-    if (path.find(".jpg") != std::string_view::npos)  return "image/jpeg";
-    if (path.find(".png") != std::string_view::npos)  return "image/png";
+// 辅助函数获取 MIME 类型
+const char* http_conn::get_mime_type(const char* path) {
+    if (strstr(path,".html") != nullptr) return "text/html";
+    if (strstr(path,".css") != nullptr)  return "text/css";
+    if (strstr(path,".js") != nullptr)   return "text/javascript";
+    if (strstr(path,".jpg") != nullptr)  return "image/jpeg";
+    if (strstr(path,".png") != nullptr)  return "image/png";
     return "text/plain";
 }
 
 bool http_conn::process_write(RESOURCE_STATUS ret) {
-    // m_header.clear();
-
+    // header.clear();
     switch (ret) {
         case RES_FOUND: {
-            m_header = "HTTP/1.1 200 OK\r\n";
-            m_header += "Server: Cerveur/1.0\r\n";
-            m_header += "Content-Length: " + std::to_string(m_file_size) + "\r\n";
-            m_header += "Content-Type: " + std::string(get_mime_type(m_real_path)) + "\r\n";
-            m_header += "Connection: " + std::string(m_linger ? "keep-alive" : "close") + "\r\n";
-            m_header += "\r\n"; // 关键的空行
-            return true;
+            // snprintf 会自动在结尾补 \0
+            header_len = snprintf(header, FILENAME_LEN, 
+                           "HTTP/1.1 200 OK\r\n"
+                           "Server: Cerveur/1.0\r\n"
+                           "Content-Length: %ld\r\n"
+                           "Content-Type: %s\r\n"
+                           "Connection: %s\r\n"
+                           "\r\n", 
+                           m_file_size, 
+                           get_mime_type(path_buffer), 
+                           m_linger ? "keep-alive" : "close");
+            break;
         }
-        case RES_NOT_FOUND: { // 404
-            m_header = "HTTP/1.1 404 Not Found\r\n";
-            const char* body = "<html><body><h1>404 Not Found</h1></body></html>";
-            m_header += "Content-Length: " + std::to_string(strlen(body)) + "\r\n";
-            m_header += "Connection: close\r\n\r\n";
-            m_header += body;
-            return true;
+        case RES_NOT_FOUND: {
+            // 注意：这里通常需要一个 404 页面，m_file_size 应该是 404 文件的长度
+            header_len = snprintf(header, FILENAME_LEN, 
+                           "HTTP/1.1 404 Not Found\r\n"
+                           "Content-Length: %ld\r\n"
+                           "Content-Type: %s\r\n"
+                           "Connection: close\r\n"
+                           "\r\n", 
+                           m_file_size, 
+                           get_mime_type(path_buffer));
+            break;
         }
-        case RES_FORBIDDEN: { // 403
-            m_header = "HTTP/1.1 403 Forbidden\r\n";
-            m_header += "Content-Length: 0\r\n";
-            m_header += "Connection: close\r\n\r\n";
-            return true;
+        case RES_FORBIDDEN: {
+            header_len = snprintf(header, FILENAME_LEN, 
+                           "HTTP/1.1 403 Forbidden\r\n"
+                           "Content-Length: 0\r\n"
+                           "Connection: close\r\n"
+                           "\r\n");
+            break;
         }
         default:
             return false;
     }
+    if (header_len >= FILENAME_LEN || header_len < 0) {
+        return false;
+    }
+    return true;
 }
 
 // true：需要等待；false：需要重置
 bool http_conn::write() {
     // 1. 发送 Header
     ssize_t temp = 0;
-    bytes_to_send = m_header.size() - bytes_have_send;
+    bytes_to_send = header_len - bytes_have_send;
     while (bytes_to_send > 0) {
-        temp = send(m_sockfd, m_header.data() + bytes_have_send, bytes_to_send, 0);
+        temp = send(m_sockfd, header + bytes_have_send, bytes_to_send, 0);
         if (temp <= -1) {
             if (errno == EAGAIN) {
                 modfd(m_epollfd, m_sockfd, EPOLLOUT);

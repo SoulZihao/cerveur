@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <string>
 #include <string_view>
 
 class alignas(64) http_conn {
@@ -19,7 +18,7 @@ public:
 
     // 初始化连接：由 accept 成功后调用
     void init(int sockfd);
-    void init();
+    
     // 关闭连接
     void close_conn();
 
@@ -38,6 +37,8 @@ public:
     static int set_nonblocking(int fd);
 
 private:
+    void init();
+        // 存储连接状态
         // 解析状态：主状态机
     enum CHECK_STATE { 
         CHECK_STATE_REQUESTLINE = 0, // 解析请求行
@@ -69,7 +70,7 @@ private:
     LINE_STATUS parse_line();       // 更新 m_checked_idx
     RESOURCE_STATUS do_request();     // 处理路由逻辑并打开文件
 
-    const char* get_mime_type(const std::string_view& path);
+    static const char* get_mime_type(const char* path);
     bool process_write(RESOURCE_STATUS ret);
 
     int m_sockfd;                 // 该连接的 socket
@@ -86,11 +87,9 @@ private:
     bool m_linger;                // Keep-Alive 标志
 
     // --- 发送文件相关 (sendfile 专用) ---
-    std::string m_header;
     size_t bytes_have_send;
     size_t bytes_to_send;
 
-    std::string_view m_real_path;// 路由匹配后的物理路径
     int m_file_fd;
     off_t m_file_offset;          // 记录 sendfile 发送进度
     size_t m_file_size;           // 文件总大小
