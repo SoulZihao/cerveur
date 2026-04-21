@@ -8,31 +8,32 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <string>
-#include "HTTP_Server.hh"
-#include "Routes.hh"
-//#include "Response.hh"
+#include <memory>
+#include "utils.h"
+#include "http_server.h"
+#include "routes.h"
+#include"thread_pool.h"
+//#include "Response.h"
 
 int main() {
-    // 1. 获取服务器单例
-    // 这样全局只有一个控制中心，方便资源管理
+    init_logger();
+    spdlog::info("Cerveur HTTP Server starting...");
     auto& server = HttpServer::getInstance();
 
     // 2. 初始化服务器
     // 内部完成 socket, bind, listen 以及 users 数组的分配
-    if (!server.init(6969)) {
+    if (!server.Init(6969)) {
         return EXIT_FAILURE;
     }
 
     // 3. 注册路由
     // 建议 Router 也采用单例模式，或者作为 server 的一个成员
     auto& router = Router::getInstance();
-    router.add("/", "index.html");
-    router.add("/about", "about.html");
+    router.ScanAndCache("../frontend");
     router.printAll();
-
-    // 4. 开启上帝模式：进入 epoll 事件循环
-    // 这个函数会一直运行，直到服务器关闭
-    server.event_loop();
+    auto pool = std::make_shared<ThreadPool>();
+    
+    spdlog::info("Server event loop started on port {}", 6969);
+    server.EventLoop(*pool);
     return EXIT_SUCCESS;
 }

@@ -1,0 +1,327 @@
+#include <sys/sendfile.h>
+#include <cstring>
+#include <cassert>
+#include <mutex>
+#include "routes.h"
+#include "http_conn.h"
+#include "utils.h"
+
+int HttpConn::epollfd_ = -1;
+// thread_local 变量用于异步过程必须缓存
+static std::mutex g_log_mutex;
+
+//static thread_local char header_buffer[HttpConn::kFileNameLen];
+// 专门给 accept 后的新连接用
+void HttpConn::Init(int sockfd) {
+    sockfd_ = sockfd;
+    Init(); // 调用私有的无参 Init 清空状态
+    check(addfd(epollfd_, sockfd, true));
+    check(set_nonblocking(sockfd));
+}
+// 专门给长连接重置状态用
+void HttpConn::Init() {
+    read_idx_ = 0;
+    checked_index_ = 0;
+    start_line_ = 0; // 记录当前行的起始位置
+    check_state_ = kRequestLine;
+    linger_ = false;
+    m_file_fd = -1;
+    m_file_offset = 0;
+    bytes_to_send = 0;
+    bytes_have_send = 0;
+}
+
+void HttpConn::close_conn() {
+    if (sockfd_ != -1) {
+        // 从 epoll 中移除
+        check(epoll_ctl(epollfd_, EPOLL_CTL_DEL, sockfd_, 0));
+        close(sockfd_);
+        sockfd_ = -1;
+    }
+    if (m_file_fd != -1) {
+        close(m_file_fd);
+        m_file_fd = -1;
+    }
+}
+
+int HttpConn::set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+// 添加 FD 到 epoll
+int HttpConn::addfd(int epollfd, int fd, bool one_shot) {
+    epoll_event event;
+    event.data.fd = fd;
+    // 基础事件：读、边缘触发、对端断开挂起、只能同时被一个线程处理
+    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLONESHOT;
+    return epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+}
+
+// 修改 FD 事件状态
+int HttpConn::modfd(int epollfd, int fd, int ev) {
+    epoll_event event;
+    event.data.fd = fd;
+    // 关键点：重置时必须再次带上 EPOLLET 和 EPOLLONESHOT
+    event.events = ev | EPOLLET | EPOLLRDHUP | EPOLLONESHOT;
+    return epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
+}
+
+HttpConn::LineStatus HttpConn::parse_line() {
+    // 从当前检查的位置开始寻找 \r\n
+    char temp = backup_buff_[checked_index_];
+    char* cr_pos = (char*)memchr(backup_buff_ + checked_index_, '\r', read_idx_ - checked_index_);
+    if (!cr_pos || cr_pos + 1 >= backup_buff_ + read_idx_) {
+        return LineStatus::kOpen;
+    }
+    if (*(cr_pos + 1) == '\n') {
+        // 仅当检查成功时更新 checked_index_
+        checked_index_ = cr_pos - backup_buff_ + 2;
+        return LineStatus::kOK;
+        // 如果 \r 是当前缓冲区的最后一个字符，说明行还没传完
+        // 只有 \r 没有 \n，不符合 HTTP 规范
+    }else return LineStatus::kBad;
+    // 遍历完还没找到 \r，说明数据不全
+    return LineStatus::kOpen;
+}
+
+HttpConn::HttpCode HttpConn::parse_request() {
+    LineStatus line_status = LineStatus::kOK;
+
+    while ((line_status = parse_line()) == LineStatus::kOK) {
+        size_t line_len = checked_index_ - start_line_ - 2;
+        std::string_view line_data(backup_buff_ + start_line_, line_len);
+        start_line_ = checked_index_; // 更新下一行的起始位置
+
+        switch (check_state_) {
+            case kRequestLine: {
+                // 简单示例：解析 GET /index.html HTTP/1.1
+                // std::string_view line(text);
+                size_t s1 = line_data.find(' ');
+                size_t s2 = line_data.find(' ', s1 + 1);
+                url_ = line_data.substr(s1 + 1, s2 - s1 - 1);
+                check_state_ = kHeader;
+                break;
+            }
+            case kHeader: {
+                // if (line_data[0] == '\0') return HttpCode::kGetReq; // 空行说明 Header 结束
+                // 可以在这里解析 Connection: keep-alive
+                if (line_data.find("Connection: keep-alive")!=std::string_view::npos) linger_ = true;
+                if (line_data.empty()) {
+                    // 如果是 GET，直接去 do_request
+                    // 如果有 Body (Content-Length > 0)，则转入下一个状态
+                    return (url_.length()>0) ? HttpCode::kGetReq : HttpCode::kNoReq;
+                }
+                break;
+            }
+            default: return HttpCode::kBadReq;
+        }
+    }
+    if(line_status == LineStatus::kBad)return HttpCode::kBadReq;
+    // LineStatus::kOpen
+    return HttpCode::kNoReq;
+}
+
+HttpConn::ResourceStatus HttpConn::do_request() {
+    auto& router = Router::getInstance();
+    
+    // 1. 直接从路由缓存中获取资源元数据
+    // 注意：这里的 url_ 应当是处理过尾部空格且以 / 开头的路径
+    file_info = router.GetResource(std::string(url_));
+    bool is_404 = false;
+
+    // 2. 如果没找到，尝试获取预存的 404 页面
+    if (!file_info) {
+        is_404 = true;
+        file_info = router.GetResource("/404.html");
+        
+        // 如果连 404 页面都没缓存（比如启动时扫描失败），返回彻底错误
+        if (!file_info) return ResourceStatus::kError;
+    }
+    m_file_offset = 0;
+
+    // 5. 打开文件
+    // 虽然元数据在内存，但发送文件还是需要 FD（除非你用了内存映射缓存）
+    m_file_fd = open(file_info->path.c_str(), O_RDONLY);
+    if (m_file_fd < 0) return ResourceStatus::kError;
+
+    // 6. 返回对应的状态码
+    return is_404 ? ResourceStatus::kNotFound : ResourceStatus::kFound;
+}
+
+// 主要处理逻辑,执行modfd
+void HttpConn::process() {
+    // 1. 调用主状态机进行解析
+        spdlog::debug("Received a Request from Client {}:\n"
+                    "{}\n",
+                    sockfd_,
+                    std::string_view(backup_buff_, static_cast<size_t>(read_idx_)));
+    HttpCode read_ret = parse_request();
+
+    // 2. 如果请求还没收全 (HttpCode::kNoReq)，继续监听读事件
+    if (read_ret == HttpCode::kNoReq) {
+        modfd(epollfd_, sockfd_, EPOLLIN);
+        return;
+    }
+    // bool prepare_ret = process_write(read_ret);
+    // if (!prepare_ret) {
+    //     close_conn();
+    // }
+    // 此时 m_write_buf 已经装满了 Header，准备切换到写模式
+    // modfd(epollfd_, sockfd_, EPOLLOUT);
+
+    // 3. 根据解析结果决定响应逻辑
+    switch (read_ret) {
+        case HttpCode::kGetReq: {
+            // 解析成功，去查找文件、映射内存或准备 sendfile 路径
+            ResourceStatus write_ret = do_request();
+            // 请求头的构造逻辑
+            process_write(write_ret);
+            modfd(epollfd_, sockfd_, EPOLLOUT);
+            break;
+        }
+        // case HttpCode::HttpCode::kBadReq: {
+        //     // 解析失败，准备 400 错误的 Header
+        //     add_status_line(400, "Bad Request");
+        //     // ... add_headers ...
+        //     break;
+        // }
+        // case NO_RESOURCE: {
+        //     // 404 错误处理
+        //     add_status_line(404, "Not Found");
+        //     break;
+        // }
+        default:
+            // 500 内部错误处理
+            break;
+    }
+
+    // 4. 无论成功还是失败，只要准备好了响应内容，就切换到写事件
+    // 触发 EPOLLOUT 之后，event_loop 会调用 write_once() 函数
+    
+}
+
+// 只在http_server中调用一次
+// true：需要等待；false：需要重置
+bool HttpConn::read_once() {
+    if (read_idx_ >= kReadBufferSize) return false;
+    //char* recvd_buff = is_tls_ ? read_buffer : backup_buff_;
+    while (true) {
+        // 从当前位置开始读
+        ssize_t bytes_read = recv(sockfd_, backup_buff_ + read_idx_, kReadBufferSize - read_idx_, 0);
+        
+        if (bytes_read == -1) {
+            // EAGAIN: 内核缓冲区已经读空，但依然返回true，让process()决定是否继续读
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            spdlog::error("Read error on fd {}, errno: {}, msg: {}", 
+                 sockfd_, errno, strerror(errno));
+            // check(bytes_read);
+            return false;
+        } else if (bytes_read == 0) {
+            spdlog::error("Client {} closed connection (EOF)", sockfd_);
+            return false; // 对方关闭连接
+        }
+        read_idx_ += bytes_read;
+    }
+    return true;
+}
+
+bool HttpConn::process_write(ResourceStatus ret) {
+    // header_buffer.clear();
+    switch (ret) {
+        case ResourceStatus::kFound: {
+            // snprintf 会自动在结尾补 \0
+            header_len_ = snprintf(backup_buff_, kFileNameLen, 
+                           "HTTP/1.1 200 OK\r\n"
+                           "Server: Cerveur/1.0\r\n"
+                           "Content-Length: %ld\r\n"
+                           "Content-Type: %s\r\n"
+                           "Connection: %s\r\n"
+                           "\r\n", 
+                           file_info->file_size, 
+                           file_info->mime_type, 
+                           linger_ ? "keep-alive" : "close");
+            break;
+        }
+        case ResourceStatus::kNotFound: {
+            // 注意：这里通常需要一个 404 页面，m_file_size 应该是 404 文件的长度
+            header_len_ = snprintf(backup_buff_, kFileNameLen, 
+                           "HTTP/1.1 404 Not Found\r\n"
+                           "Content-Length: %ld\r\n"
+                           "Content-Type: %s\r\n"
+                           "Connection: close\r\n"
+                           "\r\n", 
+                           file_info->file_size, 
+                           file_info->mime_type);
+            break;
+        }
+        case ResourceStatus::kForbidden: {
+            header_len_ = snprintf(backup_buff_, kFileNameLen, 
+                           "HTTP/1.1 403 Forbidden\r\n"
+                           "Content-Length: 0\r\n"
+                           "Connection: close\r\n"
+                           "\r\n");
+            break;
+        }
+        default:
+            return false;
+    }
+    if (header_len_ >= kFileNameLen || header_len_ < 0) {
+        return false;
+    }
+    return true;
+}
+
+// true：需要等待；false：需要重置
+bool HttpConn::write_once() {
+    // 1. 发送 Header
+    ssize_t temp = 0;
+    bytes_to_send = header_len_ - bytes_have_send;
+    spdlog::debug("send header to socket {}:\n{}",sockfd_, backup_buff_);
+    while (bytes_to_send > 0) {
+        temp = send(sockfd_, backup_buff_ + bytes_have_send, bytes_to_send, 0);
+        if (temp <= -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                modfd(epollfd_, sockfd_, EPOLLOUT);
+                return true;
+            }
+            return false;
+        }
+        bytes_to_send -= temp;
+        bytes_have_send += temp;
+    }
+
+    // 2. 循环发送文件
+    while (true) {
+        ssize_t temp = sendfile(sockfd_, m_file_fd, &m_file_offset, file_info->file_size - m_file_offset);
+        
+        if (temp == -1) {
+            // 情况 A：缓冲区满了
+            if (errno == EAGAIN) {
+                // 虽然没发完，但因为开启了 ONESHOT，必须再次注册写事件，保证下次缓冲区空了能被唤醒
+                modfd(epollfd_, sockfd_, EPOLLOUT); 
+                return true; // 注意：这里返回 true，表示当前处理正常（仅仅是需要等待）
+            }
+            // 真正报错
+            return false;
+        }
+
+        if (m_file_offset >= file_info->file_size) break; // 发送成功完成
+    }
+    spdlog::debug("Response have send to socket {}",sockfd_);
+    // 3. 发送完毕后的清理
+    close(m_file_fd);
+    m_file_fd = -1;
+
+    // 4. 处理后续：发完后该怎么办？
+    if (linger_) {
+        // 如果是 Keep-Alive 长连接：
+        Init(); // 调用私有的无参 Init()，重置缓冲区索引和状态机，但保留 sockfd
+        modfd(epollfd_, sockfd_, EPOLLIN); // 切换回读模式，等待下一个请求
+        return true;
+    } else {
+        return false;
+    }
+}

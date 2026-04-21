@@ -1,11 +1,11 @@
 CC=g++
-CFLAGS=-g -Iinclude
+CFLAGS=-g -Iinclude -std=c++23
 OBJDIR = obj
-#DEPS = HTTP_Server.h
+#DEPS = http_server.h
 TARGET = server
 SOURCES = $(wildcard src/*.cc)
 OBJECTS = $(patsubst src/%.cc, $(OBJDIR)/%.o, $(SOURCES))
-flags = -g -Wall -lm -ldl -fPIC -rdynamic -I./include
+flags = -g -Wall -lm -ldl -fPIC -rdynamic -I./include -std=c++23
 # flags = -I./include
 
 #$(exec): $(objects)
