@@ -14,7 +14,7 @@
 class ThreadPool {
 public:
     // 构造函数：初始化 N 个线程并立即启动
-    explicit ThreadPool(size_t threads = std::thread::hardware_concurrency()) : stop_(false) {
+    explicit ThreadPool(size_t threads = std::thread::hardware_concurrency()):stop_(false){
         for (size_t i = 0; i < threads; ++i) {
             workers_.emplace_back([this] {
                 for (;;) {
@@ -38,6 +38,7 @@ public:
     auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
         using return_type = typename std::invoke_result_t<F, Args...>;
         auto task = std::make_shared<std::packaged_task<return_type()>>(
+            // restore the types of incoming parameter,currently,f and args are lvalue.
             std::bind(std::forward<F>(f), std::forward<Args>(args)...)
         );
         std::future<return_type> res = task->get_future();

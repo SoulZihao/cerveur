@@ -1,3 +1,6 @@
+# 已弃置
+
+
 CC=g++
 CFLAGS=-g -Iinclude -std=c++23
 OBJDIR = obj

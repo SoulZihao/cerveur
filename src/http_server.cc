@@ -32,13 +32,13 @@ bool HttpServer::Init(int port) {
     check(HttpConn::set_nonblocking(listen_fd_));
     // 3. 初始化连接池
     users_ = new HttpConn[MAX_FD];
-	spdlog::debug("Listening socket fd: {}, epoll fd: {}", listen_fd_, epollfd_);
+	spdlog::info("Listening socket fd: {}, epoll fd: {}", listen_fd_, epollfd_);
 	return true;
 }
 // 4. 事件循环
 void HttpServer::EventLoop(ThreadPool & pool){
     epoll_event events[MAX_EVENT_NUMBER];
-    spdlog::debug("Event loop started");
+    spdlog::info("Event loop started");
     while (true) {
         int nfds = epoll_wait(epollfd_, events, MAX_EVENT_NUMBER, -1);
         spdlog::trace("epoll_wait returned {} events", nfds);
@@ -48,27 +48,27 @@ void HttpServer::EventLoop(ThreadPool & pool){
             // 情况 1：新连接 (New Connection)
             if (sockfd == listen_fd_) {
                 spdlog::debug("New connection event on listen socket {}", listen_fd_);
-                pool.enqueue([users_ = users_,listen_fd_ = listen_fd_]{
-                    int accept_count = 0;
+                // pool.enqueue([users_ = users_,listen_fd_ = listen_fd_]{
                     while (true) { // ET 模式下 accept 也要循环读完
                         int client_fd = accept(listen_fd_, nullptr, nullptr);
                         if(client_fd == -1 && errno == EAGAIN)break;
                         check(client_fd);
-                        spdlog::info("Accepted new connection, fd: {}", client_fd);
+                        spdlog::debug("Accepted new connection, fd: {}", client_fd);
+                        // 此处存在“旧任务残留”的数据竞争。请思考：这里是否保证
                         users_[client_fd].Init(client_fd);
-                        accept_count++;
                     }
-                    spdlog::debug("Accepted {} connections in this batch", accept_count);
-                });
+                    // spdlog::debug("Accepted {} connections in this batch", accept_count);
+                // });
             }else if (events[i].events & EPOLLIN) {// 情况 2：客户端发来数据 (Read)
                 spdlog::debug("Read event on socket {}", sockfd);
+                if(sockfd == -1)spdlog::error("Read event on socket {}", sockfd);
                 pool.enqueue([users_ = users_,sockfd] {
                     // 这个 Lambda 就在工作线程运行了
                     if (users_[sockfd].read_once()) {
                         users_[sockfd].process();
                     } else {
-                        spdlog::error("Because of read failed, close connection {}", sockfd);
                         users_[sockfd].close_conn();
+                        spdlog::error("Because of read failed, close connection {}", sockfd);
                     }
                 });
                 // if (users_[sockfd].read_once()) {
@@ -87,8 +87,8 @@ void HttpServer::EventLoop(ThreadPool & pool){
                 spdlog::debug("Write event on socket {}", sockfd);
                 pool.enqueue([users_ = users_, sockfd] {
                     if (!users_[sockfd].write_once()) {
-                        spdlog::error("Because of write failed, close connection {}", sockfd);
                         users_[sockfd].close_conn();
+                        spdlog::debug("After write, close connection {}", sockfd);
                     }
                 });
                 // 如果 write_once 返回 true，说明要么发完了，要么还在等待缓冲区，
@@ -97,9 +97,11 @@ void HttpServer::EventLoop(ThreadPool & pool){
             
             // 情况 4：错误处理
             else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-                const uint32_t ev = events[i].events;
-                spdlog::error("Error event on socket {}: events={:#x}", sockfd, ev);
-                users_[sockfd].close_conn();
+                pool.enqueue([users_ = users_,&events,i, sockfd] {
+                    users_[sockfd].close_conn();
+                    const uint32_t ev = events[i].events;
+                    spdlog::error("Error event on socket {}: events={:#x}", sockfd, ev);
+                });
             }
         }
     }

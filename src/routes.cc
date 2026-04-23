@@ -13,11 +13,11 @@ void Router::printAll() const {
 }
 
 void Router::ScanAndCache(const std::string& root_path){
-    spdlog::debug("Current Working Directory: {}", fs::current_path().string());
-    spdlog::debug("Target Absolute Path: {}", fs::absolute(root_path).string());
+    spdlog::info("Current Working Directory: {}", fs::current_path().string());
+    spdlog::info("Target Absolute Path: {}", fs::absolute(root_path).string());
 
     if (!fs::exists(root_path)) {
-        spdlog::error("Path {} does not exist!", root_path);
+        spdlog::info("Path {} does not exist!", root_path);
         return;
     }
     for (const auto& entry : fs::recursive_directory_iterator(root_path)) {

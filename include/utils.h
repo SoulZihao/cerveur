@@ -3,13 +3,14 @@
 #include <string_view>
 #include <cstring>
 #include <spdlog/spdlog.h>
+#include "spdlog/async.h"
 #include "spdlog/sinks/stdout_color_sinks.h" // 彩色控制台
 
 // 统一检查函数：如果 condition 为假（比如 -1 == res），则报错
 template <typename T>
 inline void check(T val, 
            std::source_location loc = std::source_location::current(),std::string_view msg = "") {
-    #ifndef NDEBUG
+    #ifdef DEBUG
     // 对于大多数系统调用，返回 -1 表示失败
     if (val == -1) {
         std::cerr << "[-] Error in " << loc.file_name() << ":" 
@@ -25,6 +26,7 @@ inline void check(T val,
 
 inline void init_logger() {
     // 创建一个带颜色的控制台日志器
+    spdlog::init_thread_pool(8192, 1);
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     auto logger = std::make_shared<spdlog::logger>("Cerveur", console_sink);
     
@@ -35,9 +37,9 @@ inline void init_logger() {
     spdlog::set_default_logger(logger);
 
     // 设置日志等级：Debug 模式下设为 debug，Release 下设为 info
-#ifdef NDEBUG
-    spdlog::set_level(spdlog::level::info);
-#else
+#ifdef DEBUG
     spdlog::set_level(spdlog::level::debug);
+#else
+    spdlog::set_level(spdlog::level::info);
 #endif
 }

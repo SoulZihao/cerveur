@@ -17,6 +17,11 @@
 
 int main() {
     init_logger();
+    #ifdef DEBUG
+    spdlog::info("DEBUG mode");
+    #else
+    spdlog::info("RELEASE mode");
+    #endif
     spdlog::info("Cerveur HTTP Server starting...");
     auto& server = HttpServer::getInstance();
 

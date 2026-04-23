@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <sys/epoll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -14,7 +15,7 @@ public:
     static constexpr int kReadBufferSize = 8192;
     static constexpr int kFileNameLen = 256;
 
-    HttpConn() : sockfd_(-1), m_file_fd(-1) {}
+    HttpConn() : a_sockfd_(-1) {}
     ~HttpConn() { close_conn(); }
 
     // 初始化连接：由 accept 成功后调用
@@ -71,11 +72,12 @@ private:
     LineStatus parse_line();       // 更新 checked_index_
     ResourceStatus do_request();     // 处理路由逻辑并打开文件
 
-    bool process_write(ResourceStatus ret);
+    bool process_write(const ResourceStatus& ret);
 
-    int sockfd_;                 // 该连接的 socket
-    int start_line_;             // 记录当前行的位置
-    int checked_index_;            // 当前正在解析的字节位置
+    std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
+    std::atomic<int> a_sockfd_;       // 该连接 the socket
+    int start_line_;                // 记录当前行的位置
+    int checked_index_;             // 当前正在解析的字节位置
     char backup_buff_[kReadBufferSize];
     int read_idx_;               // 读缓冲区中已存入数据的末尾索引
     
@@ -92,7 +94,7 @@ private:
     size_t bytes_have_send;
     size_t bytes_to_send;
 
-    int m_file_fd;
+    std::atomic<int> file_fd_;
     off_t m_file_offset;          // 记录 sendfile 发送进度
     const ResourceInfo* file_info;
 };
