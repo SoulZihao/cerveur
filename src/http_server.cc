@@ -47,20 +47,20 @@ void HttpServer::EventLoop(ThreadPool & pool){
             check(sockfd);
             // 情况 1：新连接 (New Connection)
             if (sockfd == listen_fd_) {
-                spdlog::debug("New connection event on listen socket {}", listen_fd_);
+                SPDLOG_DEBUG("New connection event on listen socket {}", listen_fd_);
                 // pool.enqueue([users_ = users_,listen_fd_ = listen_fd_]{
                     while (true) { // ET 模式下 accept 也要循环读完
                         int client_fd = accept(listen_fd_, nullptr, nullptr);
                         if(client_fd == -1 && errno == EAGAIN)break;
                         check(client_fd);
-                        spdlog::debug("Accepted new connection, fd: {}", client_fd);
+                        SPDLOG_DEBUG("Accepted new connection, fd: {}", client_fd);
                         // 此处存在“旧任务残留”的数据竞争。请思考：这里是否保证
                         users_[client_fd].Init(client_fd);
                     }
-                    // spdlog::debug("Accepted {} connections in this batch", accept_count);
+                    // SPDLOG_DEBUG("Accepted {} connections in this batch", accept_count);
                 // });
             }else if (events[i].events & EPOLLIN) {// 情况 2：客户端发来数据 (Read)
-                spdlog::debug("Read event on socket {}", sockfd);
+                SPDLOG_DEBUG("Read event on socket {}", sockfd);
                 if(sockfd == -1)spdlog::error("Read event on socket {}", sockfd);
                 pool.enqueue([users_ = users_,sockfd] {
                     // 这个 Lambda 就在工作线程运行了
@@ -84,11 +84,11 @@ void HttpServer::EventLoop(ThreadPool & pool){
             
             // 情况 3：可以向客户端发数据了 (Write)
             else if (events[i].events & EPOLLOUT) {
-                spdlog::debug("Write event on socket {}", sockfd);
+                SPDLOG_DEBUG("Write event on socket {}", sockfd);
                 pool.enqueue([users_ = users_, sockfd] {
                     if (!users_[sockfd].write_once()) {
                         users_[sockfd].close_conn();
-                        spdlog::debug("After write, close connection {}", sockfd);
+                        SPDLOG_DEBUG("After write, close connection {}", sockfd);
                     }
                 });
                 // 如果 write_once 返回 true，说明要么发完了，要么还在等待缓冲区，

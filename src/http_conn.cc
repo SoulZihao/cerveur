@@ -162,7 +162,7 @@ HttpConn::ResourceStatus HttpConn::do_request() {
 // 主要处理逻辑,执行modfd
 void HttpConn::process() {
     // 1. 调用主状态机进行解析
-        spdlog::debug("Received a Request from Client {}:\n"
+        SPDLOG_DEBUG("Received a Request from Client {}:\n"
                     "{}\n",
                     a_sockfd_.load(),
                     std::string_view(backup_buff_, static_cast<size_t>(read_idx_)));
@@ -286,7 +286,7 @@ bool HttpConn::write_once() {
     // 1. 发送 Header
     ssize_t temp = 0;
     bytes_to_send = header_len_ - bytes_have_send;
-    spdlog::debug("send header to socket {}:\n{}",a_sockfd_.load(), backup_buff_);
+    SPDLOG_DEBUG("send header to socket {}:\n{}",a_sockfd_.load(), backup_buff_);
     while (bytes_to_send > 0) {
         temp = send(a_sockfd_.load(), backup_buff_ + bytes_have_send, bytes_to_send, 0);
         if (temp <= -1) {
@@ -318,7 +318,7 @@ bool HttpConn::write_once() {
 
         if (m_file_offset >= file_info->file_size) break; // 发送成功完成
     }
-    spdlog::debug("Response have send to socket {}",a_sockfd_.load());
+    SPDLOG_DEBUG("Response have send to socket {}",a_sockfd_.load());
     // 3. 发送完毕后的清理
     close(file_fd_);
     file_fd_ = -1;

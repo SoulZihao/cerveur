@@ -35,20 +35,16 @@ public:
 
     // 万能添加：支持 Lambda、函数指针、成员函数
     template<class F, class... Args>
-    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
-        using return_type = typename std::invoke_result_t<F, Args...>;
-        auto task = std::make_shared<std::packaged_task<return_type()>>(
-            // restore the types of incoming parameter,currently,f and args are lvalue.
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-        );
-        std::future<return_type> res = task->get_future();
+    void enqueue(F&& f, Args&&... args) /*-> std::future<typename std::invoke_result_t<F, Args...>>*/ {
         {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            if (stop_) throw std::runtime_error("enqueue on stopped ThreadPool");
-            tasks_.emplace([task]() { (*task)(); });
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        if (stop_) throw std::runtime_error("enqueue on stopped ThreadPool");
+        
+        // 直接将函数和参数通过 std::bind 绑定，并存入任务队列
+        // std::function<void()> 会利用“小对象优化”(SSO) 尽量避免堆分配
+        tasks_.emplace(std::bind(std::forward<F>(f), std::forward<Args>(args)...));
         }
-        cond_.notify_one();
-        return res;
+    cond_.notify_one();
     }
 
     ~ThreadPool() {
