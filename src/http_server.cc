@@ -1,7 +1,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <ranges>
 #include "utils.h"
 #include "http_server.h"
+#include <netinet/tcp.h>
+int hc = std::thread::hardware_concurrency();
+const unsigned int HttpServer::kThreadNum = (hc > 4) ? (hc - 4) : 1; 
 
 bool HttpServer::Init(int port) {
 	port_ = port;
@@ -21,87 +25,60 @@ bool HttpServer::Init(int port) {
 
 	check(listen(listen_fd_, SOMAXCONN));
 	this->epollfd_ = epoll_create1(0);
-    HttpConn::epollfd_ = this->epollfd_;
+    // HttpConn::epollfd_ = this->epollfd_;
 
 	// 添加监听端socket
     epoll_event event;
     event.data.fd = listen_fd_;
     event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+    check(HttpConn::set_nonblocking(listen_fd_));
     check(epoll_ctl(epollfd_, EPOLL_CTL_ADD, listen_fd_, &event));
     // HttpConn::addfd(epollfd_,listen_fd_,false);
-    check(HttpConn::set_nonblocking(listen_fd_));
     // 3. 初始化连接池
     users_ = new HttpConn[MAX_FD];
+    for (int i = 0; i < kThreadNum; ++i) {
+        sub_reactors_.emplace_back(std::make_unique<SubReactor>());
+    }
+    for (auto [i, sub_reactor] : std::views::enumerate(sub_reactors_)) {
+        sub_reactor->Start(users_,i);
+    }
 	spdlog::info("Listening socket fd: {}, epoll fd: {}", listen_fd_, epollfd_);
 	return true;
 }
 // 4. 事件循环
-void HttpServer::EventLoop(ThreadPool & pool){
+void HttpServer::EventLoop() {
     epoll_event events[MAX_EVENT_NUMBER];
-    spdlog::info("Event loop started");
+    int next_worker = 0;
+    int worker_count = sub_reactors_.size();
+
     while (true) {
+        // 主线程只监听 listen_fd_，压力极小
         int nfds = epoll_wait(epollfd_, events, MAX_EVENT_NUMBER, -1);
-        spdlog::trace("epoll_wait returned {} events", nfds);
+        
         for (int i = 0; i < nfds; ++i) {
             int sockfd = events[i].data.fd;
-            check(sockfd);
-            // 情况 1：新连接 (New Connection)
+            
             if (sockfd == listen_fd_) {
-                SPDLOG_DEBUG("New connection event on listen socket {}", listen_fd_);
-                // pool.enqueue([users_ = users_,listen_fd_ = listen_fd_]{
-                    while (true) { // ET 模式下 accept 也要循环读完
-                        int client_fd = accept(listen_fd_, nullptr, nullptr);
-                        if(client_fd == -1 && errno == EAGAIN)break;
-                        check(client_fd);
-                        SPDLOG_DEBUG("Accepted new connection, fd: {}", client_fd);
-                        // 此处存在“旧任务残留”的数据竞争。请思考：这里是否保证
-                        users_[client_fd].Init(client_fd);
+                while (true) {
+                    int client_fd = accept(listen_fd_, nullptr, nullptr);
+                    if (client_fd == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        continue;
                     }
-                    // SPDLOG_DEBUG("Accepted {} connections in this batch", accept_count);
-                // });
-            }else if (events[i].events & EPOLLIN) {// 情况 2：客户端发来数据 (Read)
-                SPDLOG_DEBUG("Read event on socket {}", sockfd);
-                if(sockfd == -1)spdlog::error("Read event on socket {}", sockfd);
-                pool.enqueue([users_ = users_,sockfd] {
-                    // 这个 Lambda 就在工作线程运行了
-                    if (users_[sockfd].read_once()) {
-                        users_[sockfd].process();
-                    } else {
-                        users_[sockfd].close_conn();
-                        spdlog::error("Because of read failed, close connection {}", sockfd);
-                    }
-                });
-                // if (users_[sockfd].read_once()) {
-                //     // 读完后立刻进行逻辑解析
-                //     users_[sockfd].process();
-                //     // 解析完后，我们要写数据（发送文件），所以改为监听写事件
-                //     // modfd(epollfd_, sockfd, EPOLLOUT);
-                // } else {
-                //     // 读取失败（如对端关闭），关闭连接
-                //     users_[sockfd].close_conn();
-                // }
-            }
-            
-            // 情况 3：可以向客户端发数据了 (Write)
-            else if (events[i].events & EPOLLOUT) {
-                SPDLOG_DEBUG("Write event on socket {}", sockfd);
-                pool.enqueue([users_ = users_, sockfd] {
-                    if (!users_[sockfd].write_once()) {
-                        users_[sockfd].close_conn();
-                        SPDLOG_DEBUG("After write, close connection {}", sockfd);
-                    }
-                });
-                // 如果 write_once 返回 true，说明要么发完了，要么还在等待缓冲区，
-                // 内部已经处理好了 modfd 或 keep-alive 的逻辑。
-            }
-            
-            // 情况 4：错误处理
-            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) {
-                pool.enqueue([users_ = users_,&events,i, sockfd] {
-                    users_[sockfd].close_conn();
-                    const uint32_t ev = events[i].events;
-                    spdlog::error("Error event on socket {}: events={:#x}", sockfd, ev);
-                });
+
+                    // 1. 禁用 Nagle 算法：解决 40ms 延迟问题
+                    int flag = 1;
+                    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
+
+                    // 2. 负载均衡：Round-Robin 算法
+                    int current_worker = next_worker;
+                    int target_fd = sub_reactors_[next_worker]->get_epoll_fd();
+                    next_worker = (next_worker + 1) % worker_count;
+
+                    // 3. 派发给子 Reactor
+                    users_[client_fd].Init(client_fd, target_fd);
+                    SPDLOG_DEBUG("Dispatching fd {} to Reactor {}", client_fd, current_worker);
+                }
             }
         }
     }

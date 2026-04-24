@@ -3,3 +3,4 @@ obj/
 build/
 server
 compile_commands.json
+perf.data

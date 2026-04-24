@@ -36,9 +36,9 @@ int main() {
     auto& router = Router::getInstance();
     router.ScanAndCache("../frontend");
     router.printAll();
-    auto pool = std::make_shared<ThreadPool>();
+    // auto pool = std::make_shared<ThreadPool>();
     
     spdlog::info("Server event loop started on port {}", 6969);
-    server.EventLoop(*pool);
+    server.EventLoop();
     return EXIT_SUCCESS;
 }

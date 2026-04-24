@@ -6,21 +6,19 @@
 #include "http_conn.h"
 #include "utils.h"
 
-int HttpConn::epollfd_ = -1;
 // thread_local 变量用于异步过程必须缓存
-static std::mutex g_log_mutex;
 
 //static thread_local char header_buffer[HttpConn::kFileNameLen];
 // 专门给 accept 后的新连接用
-void HttpConn::Init(int sockfd) {
-    while (lock_.test_and_set(std::memory_order_acquire)) {
-        // spin
-    }
+void HttpConn::Init(int sockfd,int target_epoll_fd) {
+    while (lock_.test_and_set(std::memory_order_acquire)) {}
     Init(); // 调用私有的无参 Init 清空状态
+    // epollfd_ 是每个线程独有的
+    this->epollfd_ = target_epoll_fd;
     a_sockfd_.store(sockfd);
     // 放在后面的话，在init()时有可能sockfd就被分发到别的线程中了
     check(set_nonblocking(sockfd));
-    check(addfd(epollfd_, sockfd, true));
+    check(addfd(epollfd_, sockfd));
     lock_.clear(std::memory_order_release);
 }
 // 专门给长连接重置状态用
@@ -60,11 +58,11 @@ int HttpConn::set_nonblocking(int fd) {
 }
 
 // 添加 FD 到 epoll
-int HttpConn::addfd(int epollfd, int fd, bool one_shot) {
+int HttpConn::addfd(int epollfd, int fd) {
     epoll_event event;
     event.data.fd = fd;
     // 基础事件：读、边缘触发、对端断开挂起、只能同时被一个线程处理
-    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP | EPOLLONESHOT;
+    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
     return epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
 }
 
@@ -73,7 +71,7 @@ int HttpConn::modfd(int epollfd, int fd, int ev) {
     epoll_event event;
     event.data.fd = fd;
     // 关键点：重置时必须再次带上 EPOLLET 和 EPOLLONESHOT
-    event.events = ev | EPOLLET | EPOLLRDHUP | EPOLLONESHOT;
+    event.events = ev | EPOLLET | EPOLLRDHUP;
     return epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 
@@ -159,7 +157,7 @@ HttpConn::ResourceStatus HttpConn::do_request() {
     return is_404 ? ResourceStatus::kNotFound : ResourceStatus::kFound;
 }
 
-// 主要处理逻辑,执行modfd
+// 主要处理逻辑：执行modfd
 void HttpConn::process() {
     // 1. 调用主状态机进行解析
         SPDLOG_DEBUG("Received a Request from Client {}:\n"
@@ -182,7 +180,10 @@ void HttpConn::process() {
             ResourceStatus write_ret = do_request();
             // 请求头的构造逻辑
             process_write(write_ret);
-            modfd(epollfd_, a_sockfd_.load(), EPOLLOUT);
+            // modfd(epollfd_, a_sockfd_.load(), EPOLLOUT);
+            if(!write_once()){
+                close_conn();
+            }
             return;
         }
         // case HttpCode::HttpCode::kBadReq: {
@@ -288,7 +289,7 @@ bool HttpConn::write_once() {
     bytes_to_send = header_len_ - bytes_have_send;
     SPDLOG_DEBUG("send header to socket {}:\n{}",a_sockfd_.load(), backup_buff_);
     while (bytes_to_send > 0) {
-        temp = send(a_sockfd_.load(), backup_buff_ + bytes_have_send, bytes_to_send, 0);
+        temp = send(a_sockfd_.load(), backup_buff_ + bytes_have_send, bytes_to_send, MSG_MORE);
         if (temp <= -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 modfd(epollfd_, a_sockfd_.load(), EPOLLOUT);

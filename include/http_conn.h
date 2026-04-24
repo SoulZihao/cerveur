@@ -19,7 +19,7 @@ public:
     ~HttpConn() { close_conn(); }
 
     // 初始化连接：由 accept 成功后调用
-    void Init(int sockfd);
+    void Init(int sockfd,int target_epoll_fd);
     
     // 关闭连接
     void close_conn();
@@ -32,8 +32,8 @@ public:
     // 非阻塞写：执行 sendfile 逻辑
     bool write_once();
 
-    static int epollfd_;         // 共享同一个 epollfd
-    static int addfd(int epollfd, int fd, bool one_shot);
+    int epollfd_;         // 共享同一个 epollfd
+    static int addfd(int epollfd, int fd);
     static int modfd(int epollfd, int fd, int ev);
     // static void removefd(int epollfd, int fd);
     static int set_nonblocking(int fd);
