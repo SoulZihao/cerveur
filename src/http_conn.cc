@@ -1,7 +1,6 @@
 #include <sys/sendfile.h>
 #include <cstring>
 #include <cassert>
-#include <mutex>
 #include "routes.h"
 #include "http_conn.h"
 #include "utils.h"
@@ -11,6 +10,7 @@
 //static thread_local char header_buffer[HttpConn::kFileNameLen];
 // 专门给 accept 后的新连接用
 void HttpConn::Init(int sockfd,int target_epoll_fd) {
+    // acquire to read
     while (lock_.test_and_set(std::memory_order_acquire)) {}
     Init(); // 调用私有的无参 Init 清空状态
     // epollfd_ 是每个线程独有的
@@ -19,6 +19,7 @@ void HttpConn::Init(int sockfd,int target_epoll_fd) {
     // 放在后面的话，在init()时有可能sockfd就被分发到别的线程中了
     check(set_nonblocking(sockfd));
     check(addfd(epollfd_, sockfd));
+    // finish write,so release it 
     lock_.clear(std::memory_order_release);
 }
 // 专门给长连接重置状态用

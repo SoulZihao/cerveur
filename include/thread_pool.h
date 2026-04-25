@@ -6,8 +6,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
-#include <future>
-#include <type_traits>
 #include <stdexcept>
 #include <utility>
 
