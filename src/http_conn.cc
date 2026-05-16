@@ -15,7 +15,8 @@ void HttpConn::Init(int sockfd,int target_epoll_fd) {
     Init(); // 调用私有的无参 Init 清空状态
     // epollfd_ 是每个线程独有的
     this->epollfd_ = target_epoll_fd;
-    a_sockfd_.store(sockfd);
+    // a_sockfd_.store(sockfd);
+    a_sockfd_ = sockfd;
     // 放在后面的话，在init()时有可能sockfd就被分发到别的线程中了
     check(set_nonblocking(sockfd));
     check(addfd(epollfd_, sockfd));
@@ -39,16 +40,18 @@ void HttpConn::close_conn() {
     while (lock_.test_and_set(std::memory_order_acquire)) {
         // spin
     }
-    int sockfd = a_sockfd_.exchange(-1);
-    int fd_to_close = file_fd_.exchange(-1);
-    if (fd_to_close != -1) {
-        close(fd_to_close);
+    //int sockfd = a_sockfd_;
+    //int fd_to_close = file_fd_.exchange(-1);
+    if (file_fd_ != -1) {
+        close(file_fd_);
+        file_fd_ = -1;
     }
-    if (sockfd != -1) {
+    if (a_sockfd_ != -1) {
         // 从 epoll 中移除
-        check(epoll_ctl(epollfd_, EPOLL_CTL_DEL, sockfd, 0));
+        check(epoll_ctl(epollfd_, EPOLL_CTL_DEL, a_sockfd_, 0));
         // 从 linux 内核列表中移除，从而可以被再次 accept
-        close(sockfd);
+        close(a_sockfd_);
+        a_sockfd_ = -1;
     }
     lock_.clear(std::memory_order_release);
 }
@@ -142,7 +145,7 @@ HttpConn::ResourceStatus HttpConn::do_request() {
     // 2. 如果没找到，尝试获取预存的 404 页面
     if (!file_info) {
         is_404 = true;
-        file_info = router.GetResource("/404.html");
+        file_info = router.GetResource("/html/404.html");
         
         // 如果连 404 页面都没缓存（比如启动时扫描失败），返回彻底错误
         if (!file_info) return ResourceStatus::kError;
@@ -163,13 +166,13 @@ void HttpConn::process() {
     // 1. 调用主状态机进行解析
         SPDLOG_DEBUG("Received a Request from Client {}:\n"
                     "{}\n",
-                    a_sockfd_.load(),
+                    a_sockfd_,
                     std::string_view(backup_buff_, static_cast<size_t>(read_idx_)));
     HttpCode read_ret = parse_request();
 
     // 2. 如果请求还没收全 (HttpCode::kNoReq)，继续监听读事件
     if (read_ret == HttpCode::kNoReq) {
-        modfd(epollfd_, a_sockfd_.load(), EPOLLIN);
+        modfd(epollfd_, a_sockfd_, EPOLLIN);
         // 确保 modfd 之后本线程不会再执行任何事情
         return;
     }
@@ -181,7 +184,7 @@ void HttpConn::process() {
             ResourceStatus write_ret = do_request();
             // 请求头的构造逻辑
             process_write(write_ret);
-            // modfd(epollfd_, a_sockfd_.load(), EPOLLOUT);
+            // modfd(epollfd_, a_sockfd_, EPOLLOUT);
             if(!write_once()){
                 close_conn();
             }
@@ -213,7 +216,7 @@ bool HttpConn::read_once() {
     //char* recvd_buff = is_tls_ ? read_buffer : backup_buff_;
     while (true) {
         // 从当前位置开始读
-        ssize_t bytes_read = recv(a_sockfd_.load(), backup_buff_ + read_idx_, kReadBufferSize - read_idx_, 0);
+        ssize_t bytes_read = recv(a_sockfd_, backup_buff_ + read_idx_, kReadBufferSize - read_idx_, 0);
         
         if (bytes_read == -1) {
             // EAGAIN: 内核缓冲区已经读空，但依然返回true，让process()决定是否继续读
@@ -221,11 +224,11 @@ bool HttpConn::read_once() {
                 return true;
             }
             spdlog::error("Errno: {}, msg: {},read error on fd {}", 
-                errno, strerror(errno),a_sockfd_.load());
+                errno, strerror(errno),a_sockfd_);
             // check(bytes_read);
             return false;
         } else if (bytes_read == 0) {
-            spdlog::error("Client {} closed connection (EOF)", a_sockfd_.load());
+            spdlog::error("Client {} closed connection (EOF)", a_sockfd_);
             return false; // 对方关闭连接
         }
         read_idx_ += bytes_read;
@@ -275,6 +278,12 @@ bool HttpConn::process_write(const ResourceStatus& ret) {
             break;
         }
         default:
+        // kError:
+            header_len_ = snprintf(backup_buff_, kFileNameLen, 
+                           "HTTP/1.1 500 Internal Server Error\r\n"
+                           "Content-Length: 0\r\n"
+                           "Connection: close\r\n"
+                           "\r\n");
             return false;
     }
     if (header_len_ >= kFileNameLen || header_len_ < 0) {
@@ -288,12 +297,12 @@ bool HttpConn::write_once() {
     // 1. 发送 Header
     ssize_t temp = 0;
     bytes_to_send = header_len_ - bytes_have_send;
-    SPDLOG_DEBUG("send header to socket {}:\n{}",a_sockfd_.load(), backup_buff_);
+    SPDLOG_DEBUG("send header to socket {}:\n{}",a_sockfd_, backup_buff_);
     while (bytes_to_send > 0) {
-        temp = send(a_sockfd_.load(), backup_buff_ + bytes_have_send, bytes_to_send, MSG_MORE);
+        temp = send(a_sockfd_, backup_buff_ + bytes_have_send, bytes_to_send, MSG_MORE);
         if (temp <= -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                modfd(epollfd_, a_sockfd_.load(), EPOLLOUT);
+                modfd(epollfd_, a_sockfd_, EPOLLOUT);
                 return true;
             }
             return false;
@@ -304,23 +313,23 @@ bool HttpConn::write_once() {
 
     // 2. 循环发送文件
     while (true) {
-        ssize_t temp = sendfile(a_sockfd_.load(), file_fd_, &m_file_offset, file_info->file_size - m_file_offset);
+        ssize_t temp = sendfile(a_sockfd_, file_fd_, &m_file_offset, file_info->file_size - m_file_offset);
         
         if (temp == -1) {
             // 情况 A：缓冲区满了
             if (errno == EAGAIN) {
                 // 虽然没发完，但因为开启了 ONESHOT，必须再次注册写事件，保证下次缓冲区空了能被唤醒
-                modfd(epollfd_, a_sockfd_.load(), EPOLLOUT); 
+                modfd(epollfd_, a_sockfd_, EPOLLOUT); 
                 return true; // 注意：这里返回 true，表示当前处理正常（仅仅是需要等待）
             }
             // 真正报错
-            spdlog::error("Failed to sendfile on socket {}",a_sockfd_.load());
+            spdlog::error("Failed to sendfile on socket {}",a_sockfd_);
             return false;
         }
 
         if (m_file_offset >= file_info->file_size) break; // 发送成功完成
     }
-    SPDLOG_DEBUG("Response have send to socket {}",a_sockfd_.load());
+    SPDLOG_DEBUG("Response have send to socket {}",a_sockfd_);
     // 3. 发送完毕后的清理
     close(file_fd_);
     file_fd_ = -1;
@@ -329,7 +338,7 @@ bool HttpConn::write_once() {
     if (linger_) {
         // 如果是 Keep-Alive 长连接：
         Init(); // 调用私有的无参 Init()，重置缓冲区索引和状态机，但保留 sockfd
-        modfd(epollfd_, a_sockfd_.load(), EPOLLIN); // 切换回读模式，等待下一个请求
+        modfd(epollfd_, a_sockfd_, EPOLLIN); // 切换回读模式，等待下一个请求
         return true;
     }
     // normally exit

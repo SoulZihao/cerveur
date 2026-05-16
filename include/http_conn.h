@@ -75,7 +75,7 @@ private:
     bool process_write(const ResourceStatus& ret);
 
     std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
-    std::atomic<int> a_sockfd_;       // 该连接 the socket
+    int a_sockfd_;       // 该连接 the socket
     int start_line_;                // 记录当前行的位置
     int checked_index_;             // 当前正在解析的字节位置
     char backup_buff_[kReadBufferSize];
@@ -94,7 +94,7 @@ private:
     size_t bytes_have_send;
     size_t bytes_to_send;
 
-    std::atomic<int> file_fd_;
+    int file_fd_;
     off_t m_file_offset;          // 记录 sendfile 发送进度
     const ResourceInfo* file_info;
 };

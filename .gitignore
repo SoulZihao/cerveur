@@ -4,3 +4,4 @@ build/
 server
 compile_commands.json
 perf.data
+.vscode/setting.json

@@ -9,10 +9,10 @@ class SubReactor
     int epoll_fd_;
     std::jthread thread_;
     static constexpr int kMaxSubEvents = 512;
-    // 启动这个工作线程的专属事件循环
+    
 public:
-    void Start(HttpConn *users, int core_id)
-    {
+    // 启动这个工作线程的专属事件循环
+    void Start(HttpConn *users, int core_id){
 
         epoll_fd_ = epoll_create1(0); // 创建专属的 epoll 实例
         check(epoll_fd_);
@@ -27,7 +27,7 @@ public:
          epoll_event events[kMaxSubEvents]; // 每个线程自己的事件数组
          spdlog::info("Jthread has started,epoll_fd_ : {}",epoll_fd_);
           while (true) {
-             // 这个 epoll_wait 只监听绑定到这个线程的 client_fd
+             // 这个 epoll_wait 只监听绑定到这个线程的 client_fd,具体逻辑在主线程http_server文件中实现
            int nfds = epoll_wait(epoll_fd_, events, kMaxSubEvents, -1);
                 for (int i = 0; i < nfds; ++i) {
                    int sockfd = events[i].data.fd;
