@@ -34,7 +34,7 @@ int main() {
     // 3. 注册路由
     // 建议 Router 也采用单例模式，或者作为 server 的一个成员
     auto& router = Router::getInstance();
-    router.ScanAndCache("../frontend");
+    router.ScanAndCache("./frontend");
     router.printAll();
     // auto pool = std::make_shared<ThreadPool>();
     

@@ -1,9 +1,7 @@
 First,build it:
 ```bash
-mkdir build
-cd build
-cmake .. -DENABLE_CERVEUR_DEBUG=OFF
-make
+cmake -S. -B build -D ENABLE_CERVEUR_DEBUG=OFF
+cmake --build build
 ```
 Second,run it:
 ```bash
